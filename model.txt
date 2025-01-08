@@ -1,0 +1,72 @@
+import json
+import numpy as np
+import tensorflow as tf
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from transformers import BertTokenizer
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Embedding, LSTM, Dense, Dropout, Input, Bidirectional, BatchNormalization
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+
+file = open('intents.json', 'r')
+data = json.load(file)
+file.close()
+
+patterns = []
+responses = []
+labels = []
+
+for intent in data["intents"]:
+    if "patterns" in intent and "responses" in intent:
+        for pattern in intent["patterns"]:
+            patterns.append(pattern)
+            responses.append(np.random.choice(intent["responses"]))
+        labels.extend([intent["tag"]] * len(intent["patterns"]))
+
+label_encoder = LabelEncoder()
+labels_encoded = label_encoder.fit_transform(labels)
+
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+max_length = 30
+input_ids = []
+attention_masks = []
+
+for pattern in patterns:
+    encoded = tokenizer.encode_plus(pattern, add_special_tokens=True, max_length=max_length, padding='max_length', truncation=True, return_attention_mask=True)
+    input_ids.append(encoded['input_ids'])
+    attention_masks.append(encoded['attention_mask'])
+
+input_ids = np.array(input_ids)
+attention_masks = np.array(attention_masks)
+labels_encoded = np.array(labels_encoded)
+
+X_train, X_test, y_train, y_test = train_test_split(input_ids, labels_encoded, test_size=0.2, random_state=42)
+
+model = Sequential()
+model.add(Input(shape=(max_length,)))
+model.add(Embedding(input_dim=tokenizer.vocab_size, output_dim=256))
+model.add(Dropout(0.3))
+model.add(BatchNormalization())
+model.add(Bidirectional(LSTM(256, return_sequences=True)))
+model.add(Dropout(0.3))
+model.add(BatchNormalization())
+model.add(Bidirectional(LSTM(128, dropout=0.3)))
+model.add(Dense(len(label_encoder.classes_), activation='softmax'))
+
+model.compile(loss='sparse_categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, mode='min')
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=1e-6, mode='min')
+model_checkpoint = ModelCheckpoint('best_model.keras', monitor='val_loss', save_best_only=True, mode='min')
+
+model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=100, batch_size=32, callbacks=[early_stopping, reduce_lr, model_checkpoint])
+
+user_input = input("You: ")
+encoded_input = tokenizer.encode_plus(user_input, add_special_tokens=True, max_length=max_length, padding='max_length', truncation=True, return_attention_mask=True)
+input_ids = np.array(encoded_input['input_ids']).reshape(1, -1)
+attention_mask = np.array(encoded_input['attention_mask']).reshape(1, -1)
+prediction = model.predict(input_ids)
+intent_index = np.argmax(prediction)
+predicted_intent = label_encoder.inverse_transform([intent_index])[0]
+response = np.random.choice([resp for resp, lbl in zip(responses, labels) if lbl == predicted_intent])
+print("Bot:", response)
